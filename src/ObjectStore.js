@@ -320,13 +320,19 @@ function storeQueryResults(
     var flat = flatten(results[i]);
     var id = storeObject(flat);
     if (includes.length) {
+      var flattenAndStoreValue = (val) => storeObject(flatten(val));
       for (var inclusion = 0; inclusion < includes.length; inclusion++) {
         var inclusionChain = includes[inclusion];
         var cur = results[i];
         for (var col = 0; cur && col < inclusionChain.length; col++) {
           cur = cur.get(inclusionChain[col]);
           if (cur) {
-            storeObject(flatten(cur));
+            // An array from an inclusion needs it's children stored.
+            if (Array.isArray(cur)) {
+              cur.forEach(flattenAndStoreValue);
+            } else {
+              flattenAndStoreValue(cur);
+            }
           }
         }
       }
@@ -373,29 +379,42 @@ function getDataForIds(ids: Id | Array<Id>): Array<FlattenedObjectData> {
 /**
  * Fetch objects from the store, converting pointers to objects where possible
  */
-function deepFetch(id: Id, seen?: Array<string>): ?FlattenedObjectData {
-  if (!store[id]) {
-    return null;
-  }
-  if (typeof seen === 'undefined') {
-    seen = [id.toString()];
-  }
-  var source = store[id].data;
-  var obj = {};
-  var seenChildren = [];
-  for (var attr in source) {
-    var sourceVal = source[attr];
-    if (sourceVal && typeof sourceVal === 'object' && sourceVal.__type === 'Pointer') {
-      var childId = new Id(sourceVal.className, sourceVal.objectId);
-      if (seen.indexOf(childId.toString()) < 0 && store[childId]) {
-        seenChildren = seenChildren.concat([childId.toString()]);
-        sourceVal = deepFetch(childId, seen.concat(seenChildren));
-      }
+function deepFetch(id, seen) {
+    if (!store[id]) {
+      return null;
     }
-    obj[attr] = sourceVal;
+    if (typeof seen === 'undefined') {
+      seen = [id.toString()];
+    }
+    var source = store[id].data;
+    var obj = {};
+    var seenChildren = [];
+    var populatePointer = function(val) {
+      if (val && typeof val === 'object' && val.__type === 'Pointer') {
+        var childId = new Id(val.className, val.objectId);
+        if (seen.indexOf(childId.toString()) < 0 && store[childId]) {
+          seenChildren = seenChildren.concat([childId.toString()]);
+          return deepFetch(childId, seen.concat(seenChildren));
+        }
+      }
+
+      return val;
+    };
+
+    for (var attr in source) {
+      var sourceVal = source[attr];
+
+      // Arrays of pointers may need to be populated
+      if (Array.isArray(sourceVal)) {
+        sourceVal = sourceVal.map(populatePointer);
+      } else {
+        sourceVal = populatePointer(sourceVal);
+      }
+
+      obj[attr] = sourceVal;
+    }
+    return obj;
   }
-  return obj;
-}
 
 /**
  * Calculate the result of applying all Mutations to an object.
